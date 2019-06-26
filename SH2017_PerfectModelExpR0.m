@@ -127,7 +127,8 @@ Tmax = 365*1/T*24; % Year
 %Tmax = 3*365*1/T*24; %3 Years
 
 % Define the time stepping
-Tmin =24/T; % 1 per day
+%Tmin =24/T; % 1 per day
+Tmin =2*24/T; % 1 per 2 days
 
 % Time vector
 t = 0:Tmin:Tmax;
@@ -154,21 +155,58 @@ Waves = [2:2];
 kvec = 1:1:1;
 
 % Define R0
-R0 = eye(totaleqs); % CORRECT???!!!
+R0 = length(x)*eye(totaleqs); % CORRECT???!!!
 
 % Loop over times
 tic
+
+% First simulate the true solution separately
 for i = 1:length(t)-1
-    
-    % Define Observations
-    v(i,:,:) = squeeze(U(i,:,:)) + r0*randn(totaleqs, length(x)); % Single observation! V is a scalar
-    
-    
-    % Fourier transform for obs
-    v_k = zeros(totaleqs,length(kvec));
     
     % True Solution
     U_k = zeros(totaleqs,length(kvec)); % Allocate for fourier vector
+    
+    % Fourier transform of initial conditions
+    Uhat0FullSpec = fft(squeeze(real(U(i,:,:))),[],2); % True solution
+    
+    % Pass through boxcar filter
+    Uhat0 = Uhat0FullSpec(:,Waves); % True
+    
+    % Shift
+    Uhat0 = fftshift(Uhat0,2); % True
+    
+    %loop over wave numbers
+    for j = 1:length(kvec)   
+        
+        k = kvec(j); % Define wave number
+        % Call on function for the model
+        F_k = SH2017_LinearModel_DA_F(k,dt,modes,tildeQ1,tildeQ2,b1,b2,taur,tau1,tau2); % Model matrix
+        
+        % Call function for the covariance matrix
+        Cov_Mat = Covariance_SH2017(k,dt,modes,tau1,tau2,b1,b2,tildeQ1,tildeQ2,taur,taul,tauv,length(x)*D);
+        
+        % True Solution
+        U_k(:,j) = F_k*Uhat0(:,j)+ mvnrnd(zeros(totaleqs,1),Cov_Mat)'; % Run the model with Gaussian noise defined by a covariance matrix
+
+    end
+    
+    % Inverse transform for true solution U, posterior, and forecast 
+    Ufull_allwaves = zeros(size(squeeze(U(i,:,:)))); % Allocate for solution with padded zeros
+    Ufull_allwaves(:,Waves) = ifftshift(U_k,2); % Set the boxcar wavenumbers to model
+    U(i+1,:,:) =ifft(Ufull_allwaves,[],2,'symmetric'); % Take the inverse transform
+    
+    % Define Observations
+    v(i+1,:,:) = squeeze(U(i+1,:,:)) + r0*randn(totaleqs, length(x)); % Single observation! V is a scalar
+    
+end
+
+% Now the filter
+for i = 1:length(t)-1
+     
+    % Fourier transform for obs
+    v_k = zeros(totaleqs,length(kvec));
+    
+    
     
     % Forecast Fourier
     forecast_k = zeros(size(U_k));
@@ -177,19 +215,16 @@ for i = 1:length(t)-1
     posterior_k = zeros(size(U_k));
     
     % Fourier transform of initial conditions
-    Uhat0FullSpec = fft(squeeze(real(U(i,:,:))),[],2); % True solution
     forecast_kFullSpec = fft(squeeze(real(forecast(i,:,:))),[],2); % Forecast
     posterior_kFullSpec = fft(squeeze(real(posterior(i,:,:))),[],2); % Posterior
-    v_kFullSpec = fft(squeeze(real(v(i,:,:))),[],2); % Observations
+    v_kFullSpec = fft(squeeze(real(v(i+1,:,:))),[],2); % Observations
     
     % Pass through boxcar filter
-    Uhat0 = Uhat0FullSpec(:,Waves); % True
     forecasthat0 = forecast_kFullSpec(:,Waves); % Forecast
     posteriorhat0 = posterior_kFullSpec(:,Waves); % Posterior
     vhat0 = v_kFullSpec(:,Waves); % Obs
     
     % Shift
-    Uhat0 = fftshift(Uhat0,2); % True
     forecasthat0 = fftshift(forecasthat0,2); % Forecast
     posteriorhat0 = fftshift(posteriorhat0,2); % Posterior
     vhat0 = fftshift(vhat0,2);
@@ -211,10 +246,7 @@ for i = 1:length(t)-1
         % Call function for the covariance matrix
         Cov_Mat = Covariance_SH2017(k,dt,modes,tau1,tau2,b1,b2,tildeQ1,tildeQ2,taur,taul,tauv,length(x)*D);
                         
-        % True Solution
-        U_k(:,j) = F_k*Uhat0(:,j)+ mvnrnd(zeros(totaleqs,1),Cov_Mat)'; % Run the model with Gaussian noise defined by a covariance matrix
- 
-        % Forecast
+       % Forecast
         forecast_k(:,j) = F_k*posteriorhat0(:,j);
         
         % define r-forecast (prior error covariance)
@@ -228,17 +260,17 @@ for i = 1:length(t)-1
     end
      
     % Inverse transform for true solution U, posterior, and forecast 
-    Ufull_allwaves = zeros(size(squeeze(U(i,:,:)))); % Allocate for solution with padded zeros
     posterior_allwaves = zeros(size(squeeze(U(i,:,:))));
     forecast_allwaves = zeros(size(squeeze(U(i,:,:))));
     
-    Ufull_allwaves(:,Waves) = ifftshift(U_k,2); % Set the boxcar wavenumbers to model
+    
     posterior_allwaves(:,Waves) = ifftshift(posterior_k,2); %Set the boxcar wavenumbers to model
     forecast_allwaves(:,Waves) = ifftshift(forecast_k,2); %Set the boxcar wavenumbers to model
 
-    U(i+1,:,:) =ifft(Ufull_allwaves,[],2,'symmetric'); % Take the inverse transform
+    
     posterior(i+1,:,:) = ifft(posterior_allwaves,[],2,'symmetric');
     forecast(i+1,:,:) = ifft(forecast_allwaves,[],2,'symmetric');
+    
 
 end
 toc
@@ -270,7 +302,7 @@ title(strcat(['Time series of true filter for r_0(t) and k=1 in Fourier space'])
 legend('true (\hat{r}_0)_n','obs \hat{v}_n','posterior (\hat{r}_0)_{n|n}','Location','Northeast','Orientation','Horizontal');
 xlabel('time [days]');
 ylabel('solution');
-
+axis([0,365,1.25*min(real(ObsR0FullSpec(:,2))),1.25*max(real(ObsR0FullSpec(:,2)))])
 
 % Make RMS plot
 subplot(2,1,2)
@@ -278,14 +310,14 @@ subplot(2,1,2)
 % Define erros
 RMS_error_TruePost = abs(real(R0FullSpec(:,2))-real(PostR0FullSpec(:,2)));
 RMS_error_TrueFore = abs(real(R0FullSpec(:,2))-real(forecastR0FullSpec(:,2)));
-plot(T*t/24,RMS_error_TruePost,'-k')
+plot(T*t/24,RMS_error_TruePost,'-b')
 hold on
-plot(T*t/24,1*ones(size(t)),'--k')
+plot(T*t/24,sqrt(length(x))*ones(size(t)),'--k')
 plot(T*t/24,RMS_error_TrueFore,'-k','Marker','.')
 
 RMS_error_TruePostTime = norm(real(R0FullSpec(:,2))-real(PostR0FullSpec(:,2)))/sqrt(length(t(300:end)));
 
-
+axis([0,365,0,50*sqrt(length(x))])
 title(strcat(['Time series for the RMS with Temporal RMS = '],num2str(RMS_error_TruePostTime)));
 legend('posterior (\hat{r}_0)_{n|n}','obs error','no filter','Location','Northeast','Orientation','Horizontal');
 xlabel('time');
